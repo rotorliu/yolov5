@@ -4,35 +4,26 @@
 
 This repository represents Ultralytics open-source research into future object detection methods, and incorporates our lessons learned and best practices evolved over training thousands of models on custom client datasets with our previous YOLO repository https://github.com/ultralytics/yolov3. **All code and models are under active development, and are subject to modification or deletion without notice.** Use at your own risk.
 
-Updates:
-- **May 27, 2020**: Public release of repo. yolov3-spp implementation (this repo) is SOTA at 45.5 mAP among all known yolo implementations, yolov5 family will be undergoing architecture research and development over Q2/Q3 2020 to increase performance. Updates may include [CSP](https://github.com/WongKinYiu/CrossStagePartialNetworks) bottlenecks from [yolov4](https://github.com/AlexeyAB/darknet), as well as PANet or BiFPN head features.
-- **May 24, 2020**: Training yolov5s/x and yolov3-spp. yolov5m/l suffered early overfitting and also code 137 early docker terminations, cause unknown. yolov5l underperforms yolov3-spp due to earlier overfitting, cause unknown.
-- **April 1, 2020**: Begin development of a 100% pytorch scaleable yolov3/4-based group of future models, in small, medium, large and extra large sizes, collectively known as yolov5. Models will be defined by new user-friendly yaml-based configuration files for ease of construction and modification. Datasets will likewise use yaml configuration files. New training platform will be simpler use, harder to break, and more robust to training a wider variety of custom dataset.
+<img src="https://user-images.githubusercontent.com/26833433/84200349-729f2680-aa5b-11ea-8f9a-604c9e01a658.png" width="1000">** GPU Latency measures end-to-end latency per image averaged over 5000 COCO val2017 images using a V100 GPU with batch size 32, and includes image preprocessing, PyTorch FP32 inference, postprocessing and NMS.
 
-
-## Ultralytics Professional Support
-
-Ultralytics is a U.S.-based particle physics and AI startup with over 6 years of expertise supporting government, academic and business clients. We offer a wide range of vision AI services, spanning from simple expert advice up to delivery of fully customized, end-to-end production solutions, including:
-- **Cloud-based AI** surveillance systems operating on **hundreds of HD video streams in realtime.**
-- **Edge AI** integrated into custom iOS and Android apps for realtime **30 FPS video inference.**
-- **Custom data training**, hyperparameter evolution, and model exportation to any destination.
-
-For business inquiries and professional support requests please visit us at https://www.ultralytics.com. 
+- **June 9, 2020**: [CSP](https://github.com/WongKinYiu/CrossStagePartialNetworks) updates to all YOLOv5 models. New models are faster, smaller and more accurate. Credit to @WongKinYiu for his excellent work with CSP. 
+- **May 27, 2020**: Public release of repo. YOLOv5 models are SOTA among all known YOLO implementations, YOLOv5 family will be undergoing architecture research and development over Q2/Q3 2020 to increase performance. Updates may include [CSP](https://github.com/WongKinYiu/CrossStagePartialNetworks) bottlenecks, [YOLOv4](https://github.com/AlexeyAB/darknet) features, as well as PANet or BiFPN heads.
+- **April 1, 2020**: Begin development of a 100% PyTorch, scaleable YOLOv3/4-based group of future models, in a range of compound-scaled sizes. Models will be defined by new user-friendly `*.yaml` files. New training methods will be simpler to start, faster to finish, and more robust to training a wider variety of custom dataset.
 
 
 ## Pretrained Checkpoints
 
-|       Model    |  AP<sup>val</sup> | AP<sup>test</sup>    |  AP<sub>50</sub> | Latency<sub>GPU</sub> | FPS<sub>GPU</sub>  | | params | FLOPs |
-|----------     |------ |------ |------ | -------- | ------| ------ |------  |  :------: |
-|     YOLOv5-s ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 33.1 | 33.0 | 53.3 | **3.3ms** | **303** | | 7.0M   | 14.0B
-|     YOLOv5-m ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 41.5 | 41.5 | 61.5 | 5.5ms | 182 | | 25.2M  | 50.2B
-|     YOLOv5-l ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 44.2 | 44.5 | 64.3 | 9.7ms | 103 | | 61.8M  | 123.1B
-|     YOLOv5-x ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | **47.1** | **47.2** | **66.7** | 15.8ms | 63 | | 123.1M | 245.7B
-|     YOLOv3-SPP ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))  | 45.5 | 45.4 | 65.2 | 8.9ms | 112 | | 63.0M  | 118.0B
+| Model | AP<sup>val</sup> | AP<sup>test</sup> | AP<sub>50</sub> | Latency<sub>GPU</sub> | FPS<sub>GPU</sub> || params | FLOPs |
+|---------- |------ |------ |------ | -------- | ------| ------ |------  |  :------: |
+| YOLOv5-s ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 35.5     | 35.5     | 55.0     | **2.5ms** | **400** || 7.1M   | 12.6B
+| YOLOv5-m ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 42.7     | 42.7     | 62.4     | 4.4ms     | 227     || 22.0M  | 39.0B
+| YOLOv5-l ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | 45.7     | 45.9     | 65.1     | 6.8ms     | 147     || 50.3M  | 89.0B
+| YOLOv5-x ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))    | **47.2** | **47.3** | **66.6** | 11.7ms    | 85      || 95.9M | 170.3B
+| YOLOv3-SPP ([ckpt](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J))  | 45.6     | 45.5     | 65.2     | 7.9ms     | 127     || 63.0M  | 118.0B
 
 ** AP<sup>test</sup> denotes COCO [test-dev2017](http://cocodataset.org/#upload) server results, all other AP results in the table denote val2017 accuracy.  
-** All accuracy numbers are for single-model single-scale without ensemble or test-time augmentation. Reproduce by  `python test.py --img-size 736 --conf_thres 0.001`  
-** Latency<sub>GPU</sub> measures end-to-end latency per image averaged over 5000 COCO val2017 images using a V100 GPU and includes image preprocessing, inference, postprocessing and NMS. Average NMS time included in this chart is 1.6ms/image.  Reproduce by `python test.py --img-size 640 --conf_thres 0.1 --batch-size 16`  
+** All AP numbers are for single-model single-scale without ensemble or test-time augmentation. Reproduce by `python test.py --img 736 --conf 0.001`  
+** Latency<sub>GPU</sub> measures end-to-end latency per image averaged over 5000 COCO val2017 images using a GCP [n1-standard-16](https://cloud.google.com/compute/docs/machine-types#n1_standard_machine_types) instance with one V100 GPU, and includes image preprocessing, PyTorch FP32 inference at batch size 32, postprocessing and NMS. Average NMS time included in this chart is 1-2ms/img.  Reproduce by `python test.py --img 640 --conf 0.1`  
 ** All checkpoints are trained to 300 epochs with default settings and hyperparameters (no autoaugmentation). 
 
 
@@ -46,9 +37,9 @@ $ pip install -U -r requirements.txt
 
 ## Tutorials
 
+* <a href="https://colab.research.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 * [Train Custom Data](https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data)
-* [Google Colab Notebook](https://colab.research.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb) with training, testing and testing examples
-* [GCP Quickstart](https://github.com/ultralytics/yolov5/wiki/GCP-Quickstart)
+* [Google Cloud Quickstart Guide](https://github.com/ultralytics/yolov5/wiki/GCP-Quickstart)
 * [Docker Quickstart Guide](https://github.com/ultralytics/yolov5/wiki/Docker-Quickstart) 
 
 
@@ -81,14 +72,13 @@ Results saved to /content/yolov5/inference/output
 
 <img src="https://user-images.githubusercontent.com/26833433/83082816-59e54880-a039-11ea-8abe-ab90cc1ec4b0.jpeg" width="500">  
 
-
 ## Reproduce Our Training
 
-Run commands below. Training takes a few days for yolov5s, to a few weeks for yolov5x on a 2080Ti GPU.
+Run command below. Training times for yolov5s/m/l/x are 2/4/6/8 days on a single V100 (multi-GPU times faster).
 ```bash
-$ python train.py --data coco.yaml --cfg yolov5s.yaml --weights '' --batch-size 16 
+$ python train.py --data coco.yaml --cfg yolov5s.yaml --weights '' --batch-size 16                                      
 ```
-<img src="https://user-images.githubusercontent.com/26833433/82960433-5a191180-9f6f-11ea-85cc-c49dbd1555e1.png" width="900">
+<img src="https://user-images.githubusercontent.com/26833433/84186698-c4d54d00-aa45-11ea-9bde-c632c1230ccd.png" width="900">
 
 
 ## Reproduce Our Environment
@@ -96,8 +86,8 @@ $ python train.py --data coco.yaml --cfg yolov5s.yaml --weights '' --batch-size 
 To access an up-to-date working environment (with all dependencies including CUDA/CUDNN, Python and PyTorch preinstalled), consider a:
 
 - **GCP** Deep Learning VM with $300 free credit offer: See our [GCP Quickstart Guide](https://github.com/ultralytics/yolov5/wiki/GCP-Quickstart) 
-- **Google Colab Notebook** with 12 hours of free GPU time: [Google Colab Notebook](https://colab.sandbox.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb)
-- **Docker Image** from https://hub.docker.com/r/ultralytics/yolov5. See [Docker Quickstart Guide](https://github.com/ultralytics/yolov5/wiki/Docker-Quickstart) 
+- **Google Colab Notebook** with 12 hours of free GPU time. <a href="https://colab.research.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
+- **Docker Image** https://hub.docker.com/r/ultralytics/yolov5. See [Docker Quickstart Guide](https://github.com/ultralytics/yolov5/wiki/Docker-Quickstart) ![Docker Pulls](https://img.shields.io/docker/pulls/ultralytics/yolov5?logo=docker)
 
 
 ## Citation
@@ -105,6 +95,16 @@ To access an up-to-date working environment (with all dependencies including CUD
 [![DOI](https://zenodo.org/badge/146165888.svg)](https://zenodo.org/badge/latestdoi/146165888)
 
 
+## About Us
+
+Ultralytics is a U.S.-based particle physics and AI startup with over 6 years of expertise supporting government, academic and business clients. We offer a wide range of vision AI services, spanning from simple expert advice up to delivery of fully customized, end-to-end production solutions, including:
+- **Cloud-based AI** surveillance systems operating on **hundreds of HD video streams in realtime.**
+- **Edge AI** integrated into custom iOS and Android apps for realtime **30 FPS video inference.**
+- **Custom data training**, hyperparameter evolution, and model exportation to any destination.
+
+For business inquiries and professional support requests please visit us at https://www.ultralytics.com. 
+
+
 ## Contact
 
-**Issues should be raised directly in the repository.** For business inquiries or professional support requests please visit us at https://www.ultralytics.com.
+**Issues should be raised directly in the repository.** For business inquiries or professional support requests please visit https://www.ultralytics.com or email Glenn Jocher at glenn.jocher@ultralytics.com. 

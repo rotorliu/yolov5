@@ -19,7 +19,7 @@ import torchvision
 from scipy.signal import butter, filtfilt
 from tqdm import tqdm
 
-from . import torch_utils, google_utils  # torch_utils, google_utils
+from . import torch_utils, google_utils  #  torch_utils, google_utils
 
 # Set printoptions
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
@@ -339,6 +339,23 @@ def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#iss
     return 1.0 - 0.5 * eps, 0.5 * eps
 
 
+class BCEBlurWithLogitsLoss(nn.Module):
+    # BCEwithLogitLoss() with reduced missing label effects.
+    def __init__(self, alpha=0.05):
+        super(BCEBlurWithLogitsLoss, self).__init__()
+        self.loss_fcn = nn.BCEWithLogitsLoss(reduction='none')  # must be nn.BCEWithLogitsLoss()
+        self.alpha = alpha
+
+    def forward(self, pred, true):
+        loss = self.loss_fcn(pred, true)
+        pred = torch.sigmoid(pred)  # prob from logits
+        dx = pred - true  # reduce only missing label effects
+        # dx = (pred - true).abs()  # reduce missing label and false label effects
+        alpha_factor = 1 - torch.exp((dx - 1) / (self.alpha + 1e-4))
+        loss *= alpha_factor
+        return loss.mean()
+
+
 def compute_loss(p, targets, model):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
@@ -461,33 +478,41 @@ def build_targets(p, targets, model):
     return tcls, tbox, indices, anch
 
 
-def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=True, classes=None, agnostic=False):
+def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, fast=False, classes=None, agnostic=False):
     """
     Performs  Non-Maximum Suppression on inference results
     Returns detections with shape:
         nx6 (x1, y1, x2, y2, conf, cls)
     """
+    nc = prediction[0].shape[1] - 5  # number of classes
+    xc = prediction[..., 4] > conf_thres  # candidates
 
     # Settings
-    merge = True  # merge for best mAP
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
+    max_det = 300  # maximum number of detections per image
     time_limit = 10.0  # seconds to quit after
+    redundant = True  # require redundant detections
+    fast |= conf_thres > 0.001  # fast mode
+    if fast:
+        merge = False
+        multi_label = False
+    else:
+        merge = True  # merge for best mAP (adds 0.5ms/img)
+        multi_label = nc > 1  # multiple labels per box (adds 0.5ms/img)
 
     t = time.time()
-    nc = prediction[0].shape[1] - 5  # number of classes
-    multi_label &= nc > 1  # multiple labels per box
     output = [None] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
-        x = x[x[:, 4] > conf_thres]  # confidence
-        # x = x[((x[:, 2:4] > min_wh) & (x[:, 2:4] < max_wh)).all(1)]  # width-height
+        # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
+        x = x[xc[xi]]  # confidence
 
         # If none remain process next image
         if not x.shape[0]:
             continue
 
         # Compute conf
-        x[..., 5:] *= x[..., 4:5]  # conf = obj_conf * cls_conf
+        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
@@ -495,14 +520,14 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
             i, j = (x[:, 5:] > conf_thres).nonzero().t()
-            x = torch.cat((box[i], x[i, j + 5].unsqueeze(1), j.float().unsqueeze(1)), 1)
+            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
         else:  # best class only
-            conf, j = x[:, 5:].max(1)
-            x = torch.cat((box, conf.unsqueeze(1), j.float().unsqueeze(1)), 1)[conf > conf_thres]
+            conf, j = x[:, 5:].max(1, keepdim=True)
+            x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes:
-            x = x[(j.view(-1, 1) == torch.tensor(classes, device=j.device)).any(1)]
+            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Apply finite constraint
         # if not torch.isfinite(x).all():
@@ -517,15 +542,18 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
         # x = x[x[:, 4].argsort(descending=True)]
 
         # Batched NMS
-        c = x[:, 5] * 0 if agnostic else x[:, 5]  # classes
-        boxes, scores = x[:, :4].clone() + c.view(-1, 1) * max_wh, x[:, 4]  # boxes (offset by class), scores
+        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
+        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
         i = torchvision.ops.boxes.nms(boxes, scores, iou_thres)
+        if i.shape[0] > max_det:  # limit detections
+            i = i[:max_det]
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
             try:  # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
                 iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
                 weights = iou * scores[None]  # box weights
                 x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
-                # i = i[iou.sum(1) > 1]  # require redundancy
+                if redundant:
+                    i = i[iou.sum(1) > 1]  # require redundancy
             except:  # possible CUDA error https://github.com/ultralytics/yolov3/issues/1139
                 print(x, i, x.shape, i.shape)
                 pass
@@ -538,7 +566,7 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
 
 
 def strip_optimizer(f='weights/best.pt'):  # from utils.utils import *; strip_optimizer()
-    # Strip optimizer from *.pt files for lighter files (reduced by 2/3 size)
+    # Strip optimizer from *.pt files for lighter files (reduced by 1/2 size)
     x = torch.load(f, map_location=torch.device('cpu'))
     x['optimizer'] = None
     torch.save(x, f)
@@ -547,7 +575,11 @@ def strip_optimizer(f='weights/best.pt'):  # from utils.utils import *; strip_op
 
 def create_backbone(f='weights/best.pt', s='weights/backbone.pt'):  # from utils.utils import *; create_backbone()
     # create backbone 's' from 'f'
-    x = torch.load(f, map_location=torch.device('cpu'))
+    device = torch.device('cpu')
+    x = torch.load(f, map_location=device)
+    torch.save(x, s)  # update model if SourceChangeWarning
+    x = torch.load(s, map_location=device)
+
     x['optimizer'] = None
     x['training_results'] = None
     x['epoch'] = -1
@@ -975,15 +1007,32 @@ def plot_targets_txt():  # from utils.utils import *; plot_targets_txt()
 
 def plot_study_txt(f='study.txt', x=None):  # from utils.utils import *; plot_study_txt()
     # Plot study.txt generated by test.py
-    y = np.loadtxt(f, dtype=np.float32, usecols=[0, 1, 2, 3, 7, 8, 9], ndmin=2).T
-    x = np.arange(y.shape[1]) if x is None else np.array(x)
-    s = ['P', 'R', 'mAP@.5', 'mAP@.5:.95', 't_inference (ms/img)', 't_NMS (ms/img)', 't_total (ms/img)']
     fig, ax = plt.subplots(2, 4, figsize=(10, 6), tight_layout=True)
     ax = ax.ravel()
-    for i in range(7):
-        ax[i].plot(x, y[i], '.-', linewidth=2, markersize=8)
-        ax[i].set_title(s[i])
-    plt.savefig(f.replace('.txt','.png'), dpi=200)
+
+    fig2, ax2 = plt.subplots(1, 1, figsize=(8, 4), tight_layout=True)
+    for f in ['coco_study/study_coco_yolov5%s.txt' % x for x in ['s', 'm', 'l', 'x']]:
+        y = np.loadtxt(f, dtype=np.float32, usecols=[0, 1, 2, 3, 7, 8, 9], ndmin=2).T
+        x = np.arange(y.shape[1]) if x is None else np.array(x)
+        s = ['P', 'R', 'mAP@.5', 'mAP@.5:.95', 't_inference (ms/img)', 't_NMS (ms/img)', 't_total (ms/img)']
+        for i in range(7):
+            ax[i].plot(x, y[i], '.-', linewidth=2, markersize=8)
+            ax[i].set_title(s[i])
+
+        j = y[3].argmax() + 1
+        ax2.plot(y[6, :j], y[3, :j] * 1E2, '.-', linewidth=2, markersize=8,
+                 label=Path(f).stem.replace('study_coco_', '').replace('yolo', 'YOLO'))
+
+    ax2.plot(1E3 / np.array([209, 140, 97, 58, 35, 18]), [33.5, 39.1, 42.5, 45.9, 49., 50.5],
+             'k.-', linewidth=2, markersize=8, alpha=.25, label='EfficientDet')
+    ax2.set_xlim(0, 30)
+    ax2.set_ylim(25, 50)
+    ax2.set_xlabel('GPU Latency (ms)')
+    ax2.set_ylabel('COCO AP val')
+    ax2.legend(loc='lower right')
+    ax2.grid()
+    plt.savefig('study_mAP_latency.png', dpi=300)
+    plt.savefig(f.replace('.txt', '.png'), dpi=200)
 
 
 def plot_labels(labels):
@@ -1042,9 +1091,9 @@ def plot_results_overlay(start=0, stop=0):  # from utils.utils import *; plot_re
         for i in range(5):
             for j in [i, i + 5]:
                 y = results[j, x]
-                # ax[i].plot(x, y, marker='.', label=s[j])
-                y_smooth = butter_lowpass_filtfilt(y)
-                ax[i].plot(x, np.gradient(y_smooth), marker='.', label=s[j])
+                ax[i].plot(x, y, marker='.', label=s[j])
+                # y_smooth = butter_lowpass_filtfilt(y)
+                # ax[i].plot(x, np.gradient(y_smooth), marker='.', label=s[j])
 
             ax[i].set_title(t[i])
             ax[i].legend()
@@ -1052,8 +1101,8 @@ def plot_results_overlay(start=0, stop=0):  # from utils.utils import *; plot_re
         fig.savefig(f.replace('.txt', '.png'), dpi=200)
 
 
-def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import *; plot_results()
-    # Plot training 'results*.txt' as seen in https://github.com/ultralytics/yolov3#training
+def plot_results(start=0, stop=0, bucket='', id=(), labels=()):  # from utils.utils import *; plot_results()
+    # Plot training 'results*.txt' as seen in https://github.com/ultralytics/yolov5#reproduce-our-training
     fig, ax = plt.subplots(2, 5, figsize=(12, 6))
     ax = ax.ravel()
     s = ['GIoU', 'Objectness', 'Classification', 'Precision', 'Recall',
@@ -1063,7 +1112,7 @@ def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import 
         files = ['https://storage.googleapis.com/%s/results%g.txt' % (bucket, x) for x in id]
     else:
         files = glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')
-    for f in sorted(files):
+    for fi, f in enumerate(files):
         try:
             results = np.loadtxt(f, usecols=[2, 3, 4, 8, 9, 12, 13, 14, 10, 11], ndmin=2).T
             n = results.shape[1]  # number of rows
@@ -1073,7 +1122,8 @@ def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import 
                 if i in [0, 1, 2, 5, 6, 7]:
                     y[y == 0] = np.nan  # dont show zero loss values
                     # y /= y[0]  # normalize
-                ax[i].plot(x, y, marker='.', label=Path(f).stem, linewidth=2, markersize=8)
+                label = labels[fi] if len(labels) else Path(f).stem
+                ax[i].plot(x, y, marker='.', label=label, linewidth=2, markersize=8)
                 ax[i].set_title(s[i])
                 # if i in [5, 6, 7]:  # share train and val loss y axes
                 #     ax[i].get_shared_y_axes().join(ax[i], ax[i - 5])

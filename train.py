@@ -63,7 +63,7 @@ def train(hyp):
     weights = opt.weights  # initial training weights
 
     # Configure
-    init_seeds()
+    init_seeds(1)
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # model dict
     train_path = data_dict['train']
@@ -76,6 +76,7 @@ def train(hyp):
 
     # Create model
     model = Model(opt.cfg).to(device)
+    assert model.md['nc'] == nc, '%s nc=%g classes but %s nc=%g classes' % (opt.data, nc, opt.cfg, model.md['nc'])
 
     # Image sizes
     gs = int(max(model.stride))  # grid size (max stride)
@@ -240,9 +241,9 @@ def train(hyp):
                         x['momentum'] = np.interp(ni, xi, [0.9, hyp['momentum']])
 
             # Multi-scale
-            if True:
-                imgsz = random.randrange(640, 640 + gs) // gs * gs
-                sf = imgsz / max(imgs.shape[2:])  # scale factor
+            if opt.multi_scale:
+                sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
+                sf = sz / max(imgs.shape[2:])  # scale factor
                 if sf != 1:
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
@@ -272,7 +273,8 @@ def train(hyp):
             # Print
             mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
             mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
-            s = ('%10s' * 2 + '%10.4g' * 6) % ('%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgsz)
+            s = ('%10s' * 2 + '%10.4g' * 6) % (
+                '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
             pbar.set_description(s)
 
             # Plot
@@ -293,13 +295,13 @@ def train(hyp):
         final_epoch = epoch + 1 == epochs
         if not opt.notest or final_epoch:  # Calculate mAP
             results, maps, times = test.test(opt.data,
-                                      batch_size=batch_size,
-                                      imgsz=imgsz_test,
-                                      save_json=final_epoch and opt.data.endswith(os.sep + 'coco.yaml'),
-                                      model=ema.ema,
-                                      single_cls=opt.single_cls,
-                                      dataloader=testloader,
-                                      multi_label=ni > n_burn)
+                                             batch_size=batch_size,
+                                             imgsz=imgsz_test,
+                                             save_json=final_epoch and opt.data.endswith(os.sep + 'coco.yaml'),
+                                             model=ema.ema,
+                                             single_cls=opt.single_cls,
+                                             dataloader=testloader,
+                                             fast=ni < n_burn)
 
         # Write
         with open(results_file, 'a') as f:
@@ -325,10 +327,10 @@ def train(hyp):
         if save:
             with open(results_file, 'r') as f:  # create checkpoint
                 ckpt = {'epoch': epoch,
-                         'best_fitness': best_fitness,
-                         'training_results': f.read(),
-                         'model': ema.ema.module if hasattr(model, 'module') else ema.ema,
-                         'optimizer': None if final_epoch else optimizer.state_dict()}
+                        'best_fitness': best_fitness,
+                        'training_results': f.read(),
+                        'model': ema.ema.module if hasattr(model, 'module') else ema.ema,
+                        'optimizer': None if final_epoch else optimizer.state_dict()}
 
             # Save last, best and delete
             torch.save(ckpt, last)
@@ -376,6 +378,7 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
+    parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%')
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
