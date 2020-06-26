@@ -18,7 +18,7 @@ from utils.utils import xyxy2xywh, xywh2xyxy
 
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.dng']
-vid_formats = ['.mov', '.avi', '.mp4']
+vid_formats = ['.mov', '.avi', '.mp4', '.mpg', '.mpeg', '.m4v', '.wmv', '.mkv']
 
 # Get orientation exif tag
 for orientation in ExifTags.TAGS.keys():
@@ -63,7 +63,8 @@ class LoadImages:  # for inference
             self.new_video(videos[0])  # new video
         else:
             self.cap = None
-        assert self.nF > 0, 'No images or videos found in ' + path
+        assert self.nF > 0, 'No images or videos found in %s. Supported formats are:\nimages: %s\nvideos: %s' % \
+                            (path, img_formats, vid_formats)
 
     def __iter__(self):
         self.count = 0
@@ -257,7 +258,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, pad=0.0):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0):
         try:
             path = str(Path(path))  # os-agnostic
             parent = str(Path(path).parent) + os.sep
@@ -291,20 +292,22 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
                             for x in self.img_files]
 
+        # Read image shapes (wh)
+        sp = path.replace('.txt', '') + '.shapes'  # shapefile path
+        try:
+            with open(sp, 'r') as f:  # read existing shapefile
+                s = [x.split() for x in f.read().splitlines()]
+                assert len(s) == n, 'Shapefile out of sync'
+        except:
+            s = [exif_size(Image.open(f)) for f in tqdm(self.img_files, desc='Reading image shapes')]
+            np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
+
+        self.shapes = np.array(s, dtype=np.float64)
+
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
         if self.rect:
-            # Read image shapes (wh)
-            sp = path.replace('.txt', '') + '.shapes'  # shapefile path
-            try:
-                with open(sp, 'r') as f:  # read existing shapefile
-                    s = [x.split() for x in f.read().splitlines()]
-                    assert len(s) == n, 'Shapefile out of sync'
-            except:
-                s = [exif_size(Image.open(f)) for f in tqdm(self.img_files, desc='Reading image shapes')]
-                np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
-
             # Sort by aspect ratio
-            s = np.array(s, dtype=np.float64)
+            s = self.shapes  # wh
             ar = s[:, 1] / s[:, 0]  # aspect ratio
             irect = ar.argsort()
             self.img_files = [self.img_files[i] for i in irect]
@@ -322,7 +325,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / 32. + pad).astype(np.int) * 32
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
 
         # Cache labels
         self.imgs = [None] * n

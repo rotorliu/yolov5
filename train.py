@@ -4,11 +4,12 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
-import yaml
+import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 
 import test  # import test.py to get mAP after each epoch
 from models.yolo import Model
+from utils import google_utils
 from utils.datasets import *
 from utils.utils import *
 
@@ -20,6 +21,7 @@ except:
     mixed_precision = False  # not installed
 
 wdir = 'weights' + os.sep  # weights dir
+os.makedirs(wdir, exist_ok=True)
 last = wdir + 'last.pt'
 best = wdir + 'best.pt'
 results_file = 'results.txt'
@@ -77,12 +79,11 @@ def train(hyp):
     # Create model
     model = Model(opt.cfg).to(device)
     assert model.md['nc'] == nc, '%s nc=%g classes but %s nc=%g classes' % (opt.data, nc, opt.cfg, model.md['nc'])
+    model.names = data_dict['names']
 
     # Image sizes
     gs = int(max(model.stride))  # grid size (max stride)
-    if any(x % gs != 0 for x in opt.img_size):
-        print('WARNING: --img-size %g,%g must be multiple of %s max stride %g' % (*opt.img_size, opt.cfg, gs))
-    imgsz, imgsz_test = [make_divisible(x, gs) for x in opt.img_size]  # image sizes (train, test)
+    imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
 
     # Optimizer
     nbs = 64  # nominal batch size
@@ -113,8 +114,8 @@ def train(hyp):
 
         # load model
         try:
-            ckpt['model'] = \
-                {k: v for k, v in ckpt['model'].state_dict().items() if model.state_dict()[k].numel() == v.numel()}
+            ckpt['model'] = {k: v for k, v in ckpt['model'].float().state_dict().items()
+                             if model.state_dict()[k].shape == v.shape}  # to FP32, filter
             model.load_state_dict(ckpt['model'], strict=False)
         except KeyError as e:
             s = "%s is not compatible with %s. Specify --weights '' or specify a --cfg compatible with %s." \
@@ -152,6 +153,7 @@ def train(hyp):
                                 world_size=1,  # number of nodes
                                 rank=0)  # node rank
         model = torch.nn.parallel.DistributedDataParallel(model)
+        # pip install torch==1.4.0+cu100 torchvision==0.5.0+cu100 -f https://download.pytorch.org/whl/torch_stable.html
 
     # Dataset
     dataset = LoadImagesAndLabels(train_path, imgsz, batch_size,
@@ -159,7 +161,8 @@ def train(hyp):
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   cache_images=opt.cache_images,
-                                  single_cls=opt.single_cls)
+                                  single_cls=opt.single_cls,
+                                  stride=gs)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Correct your labels or your model.' % (mlc, nc, opt.cfg)
 
@@ -178,7 +181,8 @@ def train(hyp):
                                                                  hyp=hyp,
                                                                  rect=True,
                                                                  cache_images=opt.cache_images,
-                                                                 single_cls=opt.single_cls),
+                                                                 single_cls=opt.single_cls,
+                                                                 stride=gs),
                                              batch_size=batch_size,
                                              num_workers=nw,
                                              pin_memory=True,
@@ -190,15 +194,19 @@ def train(hyp):
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # giou loss ratio (obj_loss = 1.0 or giou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
-    model.names = data_dict['names']
 
-    # class frequency
+    # Class frequency
     labels = np.concatenate(dataset.labels, 0)
     c = torch.tensor(labels[:, 0])  # classes
     # cf = torch.bincount(c.long(), minlength=nc) + 1.
     # model._initialize_biases(cf.to(device))
-    plot_labels(labels)
-    tb_writer.add_histogram('classes', c, 0)
+    if tb_writer:
+        plot_labels(labels)
+        tb_writer.add_histogram('classes', c, 0)
+
+    # Check anchors
+    if not opt.noautoanchor:
+        check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
 
     # Exponential moving average
     ema = torch_utils.ModelEMA(model)
@@ -279,10 +287,10 @@ def train(hyp):
 
             # Plot
             if ni < 3:
-                f = 'train_batch%g.jpg' % i  # filename
-                res = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
-                if tb_writer:
-                    tb_writer.add_image(f, res, dataformats='HWC', global_step=epoch)
+                f = 'train_batch%g.jpg' % ni  # filename
+                result = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
+                if tb_writer and result is not None:
+                    tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
             # end batch ------------------------------------------------------------------------------------------------
@@ -300,8 +308,7 @@ def train(hyp):
                                              save_json=final_epoch and opt.data.endswith(os.sep + 'coco.yaml'),
                                              model=ema.ema,
                                              single_cls=opt.single_cls,
-                                             dataloader=testloader,
-                                             fast=ni < n_burn)
+                                             dataloader=testloader)
 
         # Write
         with open(results_file, 'a') as f:
@@ -355,12 +362,13 @@ def train(hyp):
     if not opt.evolve:
         plot_results()  # save as results.png
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
-    dist.destroy_process_group() if torch.cuda.device_count() > 1 else None
+    dist.destroy_process_group() if device.type != 'cpu' and torch.cuda.device_count() > 1 else None
     torch.cuda.empty_cache()
     return results
 
 
 if __name__ == '__main__':
+    check_git_status()
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=16)
@@ -371,6 +379,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume', action='store_true', help='resume training from last.pt')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
+    parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
@@ -382,12 +391,11 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
-    opt.cfg = glob.glob('./**/' + opt.cfg, recursive=True)[0]  # find file
-    opt.data = glob.glob('./**/' + opt.data, recursive=True)[0]  # find file
+    opt.cfg = check_file(opt.cfg)  # check file
+    opt.data = check_file(opt.data)  # check file
     print(opt)
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
-    # check_git_status()
     if device.type == 'cpu':
         mixed_precision = False
 
